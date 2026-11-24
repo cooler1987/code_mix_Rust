@@ -1,6 +1,6 @@
 #![windows_subsystem = "windows"]
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::ffi::c_void;
 use std::fs;
 use std::io::{self, BufReader};
@@ -34,15 +34,15 @@ use windows_sys::Win32::UI::Input::KeyboardAndMouse::EnableWindow;
 use windows_sys::Win32::UI::Shell::{DragAcceptFiles, DragFinish, DragQueryFileW, HDROP};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetMessageW,
-    GetSystemMetrics, GetWindowTextLengthW, GetWindowTextW, LoadCursorW, PostMessageW,
-    PostQuitMessage, RegisterClassW, SendMessageW, SetProcessDPIAware, SetWindowTextW,
-    ShowWindow, TranslateMessage, BM_GETCHECK, BM_SETCHECK, BN_CLICKED, BS_AUTOCHECKBOX,
-    BS_AUTORADIOBUTTON, BS_DEFPUSHBUTTON, BS_GROUPBOX, BS_PUSHBUTTON, CS_HREDRAW, CS_VREDRAW,
-    ES_AUTOHSCROLL, HMENU, IDC_ARROW, MSG, SM_CXSCREEN, SM_CYSCREEN, SW_SHOW, WM_CLOSE,
-    WM_COMMAND, WM_CREATE, WM_CTLCOLORBTN, WM_CTLCOLORSTATIC, WM_DESTROY, WM_DROPFILES,
-    WM_SETFONT, WM_USER, WNDCLASSW, WS_BORDER, WS_CAPTION, WS_CHILD, WS_EX_ACCEPTFILES,
-    WS_EX_CLIENTEDGE, WS_GROUP, WS_MINIMIZEBOX, WS_OVERLAPPED, WS_SYSMENU, WS_TABSTOP,
-    WS_VISIBLE,
+    GetSystemMetrics, GetWindowTextLengthW, GetWindowTextW, LoadCursorW, MessageBoxW,
+    PostMessageW, PostQuitMessage, RegisterClassW, SendMessageW, SetProcessDPIAware,
+    SetWindowTextW, ShowWindow, TranslateMessage, BM_GETCHECK, BM_SETCHECK, BN_CLICKED,
+    BS_AUTOCHECKBOX, BS_AUTORADIOBUTTON, BS_DEFPUSHBUTTON, BS_GROUPBOX, BS_PUSHBUTTON,
+    CS_HREDRAW, CS_VREDRAW, ES_AUTOHSCROLL, HMENU, IDC_ARROW, MB_ICONERROR, MB_OK, MSG,
+    SM_CXSCREEN, SM_CYSCREEN, SW_SHOW, WM_CLOSE, WM_COMMAND, WM_CREATE, WM_CTLCOLORBTN,
+    WM_CTLCOLORSTATIC, WM_DESTROY, WM_DROPFILES, WM_SETFONT, WM_USER, WNDCLASSW, WS_BORDER,
+    WS_CAPTION, WS_CHILD, WS_EX_ACCEPTFILES, WS_EX_CLIENTEDGE, WS_GROUP, WS_MINIMIZEBOX,
+    WS_OVERLAPPED, WS_SYSMENU, WS_TABSTOP, WS_VISIBLE,
 };
 
 const ID_RADIO_URL: i32 = 101;
@@ -96,7 +96,7 @@ struct UiState {
     font_normal: HFONT,
     font_title: HFONT,
     bg_brush: HBRUSH,
-    is_processing: bool,
+    is_processing: Cell<bool>,
 }
 
 thread_local! {
@@ -111,6 +111,22 @@ fn to_wide(s: &str) -> Vec<u16> {
 
 fn scale(val: i32, dpi: i32) -> i32 {
     (val * dpi + 48) / 96
+}
+
+fn install_panic_hook() {
+    std::panic::set_hook(Box::new(|info| {
+        let msg = format!("程序发生异常：\n{info}");
+        let text_w = to_wide(&msg);
+        let title_w = to_wide("Repomix Portable 错误");
+        unsafe {
+            MessageBoxW(
+                null_mut(),
+                text_w.as_ptr(),
+                title_w.as_ptr(),
+                MB_OK | MB_ICONERROR,
+            );
+        }
+    }));
 }
 
 unsafe fn enable_modern_ui_and_dpi() {
@@ -871,7 +887,7 @@ unsafe extern "system" fn wnd_proc(
                 font_normal,
                 font_title,
                 bg_brush,
-                is_processing: false,
+                is_processing: Cell::new(false),
             };
             refresh_input_ui(&state);
 
@@ -904,7 +920,7 @@ unsafe extern "system" fn wnd_proc(
 
                 UI.with(|cell| {
                     if let Some(ui) = cell.borrow().as_ref() {
-                        if ui.is_processing {
+                        if ui.is_processing.get() {
                             return;
                         }
                         let p = Path::new(&path);
@@ -972,7 +988,7 @@ unsafe extern "system" fn wnd_proc(
                     ID_BTN_RESET => {
                         UI.with(|cell| {
                             if let Some(ui) = cell.borrow().as_ref() {
-                                if !ui.is_processing {
+                                if !ui.is_processing.get() {
                                     set_text(ui.h_edit_path, "");
                                     set_text(ui.h_lbl_status, "状态已重置。");
                                 }
@@ -981,9 +997,9 @@ unsafe extern "system" fn wnd_proc(
                     }
                     ID_BTN_PACK => {
                         let params = UI.with(|cell| {
-                            let mut guard = cell.borrow_mut();
-                            let ui = guard.as_mut()?;
-                            if ui.is_processing {
+                            let guard = cell.borrow();
+                            let ui = guard.as_ref()?;
+                            if ui.is_processing.get() {
                                 return None;
                             }
                             let input = get_text(ui.h_edit_path);
@@ -1017,8 +1033,8 @@ unsafe extern "system" fn wnd_proc(
                                 }
 
                                 UI.with(|cell| {
-                                    if let Some(ui) = cell.borrow_mut().as_mut() {
-                                        ui.is_processing = true;
+                                    if let Some(ui) = cell.borrow().as_ref() {
+                                        ui.is_processing.set(true);
                                         EnableWindow(ui.h_btn_pack, 0);
                                         EnableWindow(ui.h_btn_reset, 0);
                                         set_text(ui.h_lbl_status, "正在打包中，请稍候...");
@@ -1070,8 +1086,8 @@ unsafe extern "system" fn wnd_proc(
                 .unwrap_or_else(|| "处理完成。".to_string());
 
             UI.with(|cell| {
-                if let Some(ui) = cell.borrow_mut().as_mut() {
-                    ui.is_processing = false;
+                if let Some(ui) = cell.borrow().as_ref() {
+                    ui.is_processing.set(false);
                     EnableWindow(ui.h_btn_pack, 1);
                     EnableWindow(ui.h_btn_reset, 1);
                     set_text(ui.h_lbl_status, &msg_text);
@@ -1086,13 +1102,12 @@ unsafe extern "system" fn wnd_proc(
         }
 
         WM_DESTROY => {
-            UI.with(|cell| {
-                if let Some(ui) = cell.borrow_mut().take() {
-                    DeleteObject(ui.font_normal);
-                    DeleteObject(ui.font_title);
-                    DeleteObject(ui.bg_brush);
-                }
-            });
+            let old = UI.with(|cell| cell.borrow_mut().take());
+            if let Some(ui) = old {
+                DeleteObject(ui.font_normal);
+                DeleteObject(ui.font_title);
+                DeleteObject(ui.bg_brush);
+            }
             PostQuitMessage(0);
             0
         }
@@ -1102,6 +1117,8 @@ unsafe extern "system" fn wnd_proc(
 }
 
 fn main() {
+    install_panic_hook();
+
     unsafe {
         enable_modern_ui_and_dpi();
 
