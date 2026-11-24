@@ -30,9 +30,10 @@ use windows_sys::Win32::System::SystemInformation::GetLocalTime;
 use windows_sys::Win32::UI::Controls::{
     InitCommonControlsEx, ICC_STANDARD_CLASSES, INITCOMMONCONTROLSEX,
 };
+use windows_sys::Win32::UI::Input::KeyboardAndMouse::EnableWindow;
 use windows_sys::Win32::UI::Shell::{DragAcceptFiles, DragFinish, DragQueryFileW, HDROP};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, EnableWindow, GetMessageW,
+    CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetMessageW,
     GetSystemMetrics, GetWindowTextLengthW, GetWindowTextW, LoadCursorW, PostMessageW,
     PostQuitMessage, RegisterClassW, SendMessageW, SetProcessDPIAware, SetWindowTextW,
     ShowWindow, TranslateMessage, UpdateWindow, BM_GETCHECK, BM_SETCHECK, BN_CLICKED,
@@ -542,7 +543,7 @@ unsafe extern "system" fn wnd_proc(
             let h_inst = GetModuleHandleW(null_mut());
             let hdc = GetDC(null_mut());
             let dpi = if !hdc.is_null() {
-                let d = GetDeviceCaps(hdc, LOGPIXELSX);
+                let d = GetDeviceCaps(hdc, LOGPIXELSX as i32);
                 ReleaseDC(null_mut(), hdc);
                 if d > 0 { d } else { 96 }
             } else {
@@ -563,7 +564,7 @@ unsafe extern "system" fn wnd_proc(
                 OUT_DEFAULT_PRECIS as _,
                 CLIP_DEFAULT_PRECIS as _,
                 CLEARTYPE_QUALITY as _,
-                (DEFAULT_PITCH | FF_DONTCARE) as _,
+                (DEFAULT_PITCH as u32 | FF_DONTCARE as u32) as _,
                 font_name.as_ptr(),
             );
             let font_title = CreateFontW(
@@ -579,7 +580,7 @@ unsafe extern "system" fn wnd_proc(
                 OUT_DEFAULT_PRECIS as _,
                 CLIP_DEFAULT_PRECIS as _,
                 CLEARTYPE_QUALITY as _,
-                (DEFAULT_PITCH | FF_DONTCARE) as _,
+                (DEFAULT_PITCH as u32 | FF_DONTCARE as u32) as _,
                 font_name.as_ptr(),
             );
             let bg_brush = CreateSolidBrush(0x00F5F5F5);
@@ -618,7 +619,7 @@ unsafe extern "system" fn wnd_proc(
             create_ctrl(
                 "BUTTON",
                 "输入来源",
-                WS_CHILD | WS_VISIBLE | BS_GROUPBOX,
+                WS_CHILD | WS_VISIBLE | (BS_GROUPBOX as u32),
                 0,
                 s(20),
                 s(68),
@@ -633,7 +634,7 @@ unsafe extern "system" fn wnd_proc(
             let h_radio_url = create_ctrl(
                 "BUTTON",
                 "Git 链接",
-                WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_GROUP | BS_AUTORADIOBUTTON,
+                WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_GROUP | (BS_AUTORADIOBUTTON as u32),
                 0,
                 s(34),
                 s(90),
@@ -647,7 +648,7 @@ unsafe extern "system" fn wnd_proc(
             let h_radio_dir = create_ctrl(
                 "BUTTON",
                 "本地文件夹",
-                WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTORADIOBUTTON,
+                WS_CHILD | WS_VISIBLE | WS_TABSTOP | (BS_AUTORADIOBUTTON as u32),
                 0,
                 s(130),
                 s(90),
@@ -661,7 +662,7 @@ unsafe extern "system" fn wnd_proc(
             let h_radio_zip = create_ctrl(
                 "BUTTON",
                 "ZIP 压缩包",
-                WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTORADIOBUTTON,
+                WS_CHILD | WS_VISIBLE | WS_TABSTOP | (BS_AUTORADIOBUTTON as u32),
                 0,
                 s(242),
                 s(90),
@@ -676,7 +677,7 @@ unsafe extern "system" fn wnd_proc(
             let h_edit_path = create_ctrl(
                 "EDIT",
                 "",
-                WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_BORDER | ES_AUTOHSCROLL,
+                WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_BORDER | (ES_AUTOHSCROLL as u32),
                 WS_EX_CLIENTEDGE,
                 s(34),
                 s(118),
@@ -690,7 +691,7 @@ unsafe extern "system" fn wnd_proc(
             let h_btn_browse = create_ctrl(
                 "BUTTON",
                 "浏览...",
-                WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
+                WS_CHILD | WS_VISIBLE | WS_TABSTOP | (BS_PUSHBUTTON as u32),
                 0,
                 s(468),
                 s(117),
@@ -705,7 +706,7 @@ unsafe extern "system" fn wnd_proc(
             create_ctrl(
                 "BUTTON",
                 "输出格式",
-                WS_CHILD | WS_VISIBLE | WS_GROUP | BS_GROUPBOX,
+                WS_CHILD | WS_VISIBLE | WS_GROUP | (BS_GROUPBOX as u32),
                 0,
                 s(20),
                 s(166),
@@ -720,7 +721,7 @@ unsafe extern "system" fn wnd_proc(
             let h_radio_xml = create_ctrl(
                 "BUTTON",
                 "XML",
-                WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_GROUP | BS_AUTORADIOBUTTON,
+                WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_GROUP | (BS_AUTORADIOBUTTON as u32),
                 0,
                 s(34),
                 s(194),
@@ -734,7 +735,7 @@ unsafe extern "system" fn wnd_proc(
             let h_radio_md = create_ctrl(
                 "BUTTON",
                 "Markdown",
-                WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTORADIOBUTTON,
+                WS_CHILD | WS_VISIBLE | WS_TABSTOP | (BS_AUTORADIOBUTTON as u32),
                 0,
                 s(102),
                 s(194),
@@ -748,7 +749,7 @@ unsafe extern "system" fn wnd_proc(
             let h_radio_plain = create_ctrl(
                 "BUTTON",
                 "Plain",
-                WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTORADIOBUTTON,
+                WS_CHILD | WS_VISIBLE | WS_TABSTOP | (BS_AUTORADIOBUTTON as u32),
                 0,
                 s(200),
                 s(194),
@@ -763,7 +764,7 @@ unsafe extern "system" fn wnd_proc(
             create_ctrl(
                 "BUTTON",
                 "内容选项",
-                WS_CHILD | WS_VISIBLE | WS_GROUP | BS_GROUPBOX,
+                WS_CHILD | WS_VISIBLE | WS_GROUP | (BS_GROUPBOX as u32),
                 0,
                 s(288),
                 s(166),
@@ -778,7 +779,7 @@ unsafe extern "system" fn wnd_proc(
             let h_chk_summary = create_ctrl(
                 "BUTTON",
                 "包含文件摘要 (File Summary)",
-                WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_GROUP | BS_AUTOCHECKBOX,
+                WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_GROUP | (BS_AUTOCHECKBOX as u32),
                 0,
                 s(302),
                 s(187),
@@ -792,7 +793,7 @@ unsafe extern "system" fn wnd_proc(
             let h_chk_structure = create_ctrl(
                 "BUTTON",
                 "包含目录结构 (Directory Structure)",
-                WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTOCHECKBOX,
+                WS_CHILD | WS_VISIBLE | WS_TABSTOP | (BS_AUTOCHECKBOX as u32),
                 0,
                 s(302),
                 s(209),
@@ -807,7 +808,7 @@ unsafe extern "system" fn wnd_proc(
             let h_btn_pack = create_ctrl(
                 "BUTTON",
                 "开始打包 (Pack)",
-                WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON,
+                WS_CHILD | WS_VISIBLE | WS_TABSTOP | (BS_DEFPUSHBUTTON as u32),
                 0,
                 s(364),
                 s(248),
@@ -821,7 +822,7 @@ unsafe extern "system" fn wnd_proc(
             let h_btn_reset = create_ctrl(
                 "BUTTON",
                 "重置",
-                WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
+                WS_CHILD | WS_VISIBLE | WS_TABSTOP | (BS_PUSHBUTTON as u32),
                 0,
                 s(490),
                 s(248),
@@ -935,7 +936,7 @@ unsafe extern "system" fn wnd_proc(
             let ctrl_id = (wparam & 0xFFFF) as i32;
             let notify = ((wparam >> 16) & 0xFFFF) as u32;
 
-            if notify == BN_CLICKED {
+            if notify == BN_CLICKED as u32 {
                 match ctrl_id {
                     ID_RADIO_URL | ID_RADIO_DIR | ID_RADIO_ZIP => {
                         UI.with(|cell| {
@@ -1131,7 +1132,7 @@ fn main() {
 
         let hdc = GetDC(null_mut());
         let dpi = if !hdc.is_null() {
-            let d = GetDeviceCaps(hdc, LOGPIXELSX);
+            let d = GetDeviceCaps(hdc, LOGPIXELSX as i32);
             ReleaseDC(null_mut(), hdc);
             if d > 0 { d } else { 96 }
         } else {
