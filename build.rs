@@ -21,17 +21,17 @@ fn append_ico_image(out: &mut Vec<u8>, size: u32) {
     let margin = s * 0.06;
     let radius = s * 0.22;
 
-    // DIB pixel rows are bottom-up (y from size - 1 down to 0)
+    // DIB 像素行自底向上存储
     for y_inv in 0..size {
         let py = (size - 1 - y_inv) as f32 + 0.5;
         for x in 0..size {
             let px = x as f32 + 0.5;
 
-            // Signed distance to rounded square
             let half = s * 0.5 - margin - radius;
             let cx = (px - s * 0.5).abs() - half;
             let cy = (py - s * 0.5).abs() - half;
-            let dist = (cx.max(0.0).powi(2) + cy.max(0.0).powi(2)).sqrt() + cx.max(cy).min(0.0) - radius;
+            let dist =
+                (cx.max(0.0).powi(2) + cy.max(0.0).powi(2)).sqrt() + cx.max(cy).min(0.0) - radius;
 
             let alpha_cov = (0.5 - dist).clamp(0.0, 1.0);
             if alpha_cov <= 0.0 {
@@ -39,18 +39,16 @@ fn append_ico_image(out: &mut Vec<u8>, size: u32) {
                 continue;
             }
 
-            // Blue-indigo diagonal gradient background
             let t = ((px + py) / (2.0 * s)).clamp(0.0, 1.0);
             let mut r = 37.0 + (29.0 - 37.0) * t;
             let mut g = 99.0 + (78.0 - 99.0) * t;
             let mut b = 235.0 + (216.0 - 235.0) * t;
 
-            // Stylized white "< >" / code box motif in normalized coordinates
+            // 居中绘制白色 "</>" 代码标识
             let nx = px / s;
             let ny = py / s;
             let stroke = 0.085;
 
-            // Left chevron "<"
             let left_top = ((ny - 0.5) - (nx - 0.24) * 1.15).abs() < stroke
                 && nx >= 0.22
                 && nx <= 0.44
@@ -62,7 +60,6 @@ fn append_ico_image(out: &mut Vec<u8>, size: u32) {
                 && ny >= 0.48
                 && ny <= 0.72;
 
-            // Right chevron ">"
             let right_top = ((ny - 0.5) + (nx - 0.76) * 1.15).abs() < stroke
                 && nx >= 0.56
                 && nx <= 0.78
@@ -74,7 +71,6 @@ fn append_ico_image(out: &mut Vec<u8>, size: u32) {
                 && ny >= 0.48
                 && ny <= 0.72;
 
-            // Center slash "/"
             let slash = ((nx - 0.5) + (ny - 0.5) * 0.35).abs() < stroke * 0.65
                 && ny >= 0.28
                 && ny <= 0.72;
@@ -90,7 +86,6 @@ fn append_ico_image(out: &mut Vec<u8>, size: u32) {
         }
     }
 
-    // AND mask (1bpp, rows padded to 4 bytes)
     let mask_row_bytes = ((size + 31) / 32) * 4;
     out.resize(out.len() + (mask_row_bytes * size) as usize, 0);
 }
@@ -105,23 +100,22 @@ fn generate_ico_bytes() -> Vec<u8> {
     }
 
     let mut ico = Vec::new();
-    // ICONDIR
-    ico.extend_from_slice(&0u16.to_le_bytes()); // reserved
-    ico.extend_from_slice(&1u16.to_le_bytes()); // type = icon
-    ico.extend_from_slice(&(sizes.len() as u16).to_le_bytes()); // count
+    ico.extend_from_slice(&0u16.to_le_bytes());
+    ico.extend_from_slice(&1u16.to_le_bytes());
+    ico.extend_from_slice(&(sizes.len() as u16).to_le_bytes());
 
     let mut offset = 6u32 + (16u32 * sizes.len() as u32);
     for (idx, &sz) in sizes.iter().enumerate() {
         let dim = if sz >= 256 { 0u8 } else { sz as u8 };
         let byte_len = images[idx].len() as u32;
-        ico.push(dim); // bWidth
-        ico.push(dim); // bHeight
-        ico.push(0); // bColorCount
-        ico.push(0); // bReserved
-        ico.extend_from_slice(&1u16.to_le_bytes()); // wPlanes
-        ico.extend_from_slice(&32u16.to_le_bytes()); // wBitCount
-        ico.extend_from_slice(&byte_len.to_le_bytes()); // dwBytesInRes
-        ico.extend_from_slice(&offset.to_le_bytes()); // dwImageOffset
+        ico.push(dim);
+        ico.push(dim);
+        ico.push(0);
+        ico.push(0);
+        ico.extend_from_slice(&1u16.to_le_bytes());
+        ico.extend_from_slice(&32u16.to_le_bytes());
+        ico.extend_from_slice(&byte_len.to_le_bytes());
+        ico.extend_from_slice(&offset.to_le_bytes());
         offset += byte_len;
     }
 
