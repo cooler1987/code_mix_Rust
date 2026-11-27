@@ -1,10 +1,10 @@
 #![windows_subsystem = "windows"]
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, HashSet};
 use std::ffi::c_void;
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, BufRead, BufReader, BufWriter, Read, Write};
+use std::io::{self, BufRead, BufReader, BufWriter, Write};
 use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -20,9 +20,9 @@ use windows_sys::Win32::Foundation::{
 };
 use windows_sys::Win32::Graphics::Gdi::{
     CreateFontW, CreateSolidBrush, DeleteObject, GetDC, GetDeviceCaps, ReleaseDC, SetBkMode,
-    SetTextColor, CLEARTYPE_QUALITY, CLIP_DEFAULT_PRECIS, DEFAULT_CHARSET, DEFAULT_PITCH,
-    FF_DONTCARE, FW_BOLD, FW_NORMAL, HBRUSH, HDC, HFONT, LOGPIXELSX, OUT_DEFAULT_PRECIS,
-    TRANSPARENT,
+    SetTextColor, UpdateWindow, CLEARTYPE_QUALITY, CLIP_DEFAULT_PRECIS, DEFAULT_CHARSET,
+    DEFAULT_PITCH, FF_DONTCARE, FW_BOLD, FW_NORMAL, HBRUSH, HDC, HFONT, LOGPIXELSX,
+    OUT_DEFAULT_PRECIS, TRANSPARENT,
 };
 use windows_sys::Win32::System::ApplicationInstallationAndServicing::{
     ActivateActCtx, CreateActCtxW, ACTCTXW,
@@ -32,19 +32,20 @@ use windows_sys::Win32::System::SystemInformation::GetLocalTime;
 use windows_sys::Win32::UI::Controls::{
     InitCommonControlsEx, ICC_STANDARD_CLASSES, INITCOMMONCONTROLSEX,
 };
+use windows_sys::Win32::UI::Input::KeyboardAndMouse::EnableWindow;
 use windows_sys::Win32::UI::Shell::{DragAcceptFiles, DragFinish, DragQueryFileW, HDROP};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     AdjustWindowRectEx, CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW,
-    EnableWindow, GetMessageW, GetSystemMetrics, GetWindowTextLengthW, GetWindowTextW,
-    IsDialogMessageW, LoadCursorW, LoadIconW, MessageBoxW, PostMessageW, PostQuitMessage,
-    RegisterClassW, SendMessageW, SetProcessDPIAware, SetWindowTextW, ShowWindow,
-    TranslateMessage, UpdateWindow, BM_GETCHECK, BM_SETCHECK, BN_CLICKED, BS_AUTOCHECKBOX,
-    BS_AUTORADIOBUTTON, BS_DEFPUSHBUTTON, BS_GROUPBOX, BS_PUSHBUTTON, CS_HREDRAW, CS_VREDRAW,
-    EN_CHANGE, ES_AUTOHSCROLL, HICON, HMENU, ICON_BIG, ICON_SMALL, IDC_ARROW, MB_ICONERROR,
-    MB_OK, MSG, SM_CXSCREEN, SM_CYSCREEN, SW_SHOW, WM_CLOSE, WM_COMMAND, WM_CREATE,
-    WM_CTLCOLORBTN, WM_CTLCOLORSTATIC, WM_DESTROY, WM_DROPFILES, WM_SETFONT, WM_SETICON, WM_USER,
-    WNDCLASSW, WS_BORDER, WS_CAPTION, WS_CHILD, WS_EX_ACCEPTFILES, WS_EX_CLIENTEDGE, WS_GROUP,
-    WS_MINIMIZEBOX, WS_OVERLAPPED, WS_SYSMENU, WS_TABSTOP, WS_VISIBLE,
+    GetMessageW, GetSystemMetrics, GetWindowTextLengthW, GetWindowTextW, IsDialogMessageW,
+    LoadCursorW, LoadIconW, MessageBoxW, PostMessageW, PostQuitMessage, RegisterClassW,
+    SendMessageW, SetProcessDPIAware, SetWindowTextW, ShowWindow, TranslateMessage, BM_GETCHECK,
+    BM_SETCHECK, BN_CLICKED, BS_AUTOCHECKBOX, BS_AUTORADIOBUTTON, BS_DEFPUSHBUTTON, BS_GROUPBOX,
+    BS_PUSHBUTTON, CS_HREDRAW, CS_VREDRAW, EN_CHANGE, ES_AUTOHSCROLL, HICON, HMENU, ICON_BIG,
+    ICON_SMALL, IDC_ARROW, MB_ICONERROR, MB_OK, MSG, SM_CXSCREEN, SM_CYSCREEN, SW_SHOW, WM_CLOSE,
+    WM_COMMAND, WM_CREATE, WM_CTLCOLORBTN, WM_CTLCOLORSTATIC, WM_DESTROY, WM_DROPFILES,
+    WM_SETFONT, WM_SETICON, WM_USER, WNDCLASSW, WS_BORDER, WS_CAPTION, WS_CHILD,
+    WS_EX_ACCEPTFILES, WS_EX_CLIENTEDGE, WS_GROUP, WS_MINIMIZEBOX, WS_OVERLAPPED, WS_SYSMENU,
+    WS_TABSTOP, WS_VISIBLE,
 };
 use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipWriter};
@@ -107,12 +108,13 @@ struct UiState {
     font_normal: HFONT,
     font_title: HFONT,
     bg_brush: HBRUSH,
-    is_processing: bool,
-    suppress_edit_change: bool,
+    is_processing: Cell<bool>,
+    suppress_edit_change: Cell<bool>,
 }
 
 thread_local! {
     static UI: RefCell<Option<UiState>> = const { RefCell::new(None) };
+    static SHARED_BG: Cell<HBRUSH> = const { Cell::new(null_mut()) };
 }
 
 static WORK_RESULT: OnceLock<Mutex<Option<(bool, String)>>> = OnceLock::new();
@@ -195,6 +197,16 @@ unsafe fn show_error_box(hwnd: HWND, title: &str, msg: &str) {
     MessageBoxW(hwnd, m.as_ptr(), t.as_ptr(), MB_OK | MB_ICONERROR);
 }
 
+fn install_panic_hook() {
+    std::panic::set_hook(Box::new(|info| {
+        let msg = format!("程序发生未捕获异常：\n{info}");
+        write_log_line("PANIC", &msg);
+        unsafe {
+            show_error_box(null_mut(), "Repomix Portable 错误", &msg);
+        }
+    }));
+}
+
 unsafe fn enable_modern_ui_and_dpi() {
     SetProcessDPIAware();
 
@@ -217,10 +229,10 @@ unsafe fn set_text(hwnd: HWND, text: &str) {
     SetWindowTextW(hwnd, wide.as_ptr());
 }
 
-unsafe fn set_edit_text_silently(ui: &mut UiState, text: &str) {
-    ui.suppress_edit_change = true;
+unsafe fn set_edit_text_silently(ui: &UiState, text: &str) {
+    ui.suppress_edit_change.set(true);
     set_text(ui.h_edit_path, text);
-    ui.suppress_edit_change = false;
+    ui.suppress_edit_change.set(false);
 }
 
 unsafe fn get_text(hwnd: HWND) -> String {
@@ -280,7 +292,8 @@ unsafe fn get_output_format(ui: &UiState) -> OutputFormat {
 
 unsafe fn refresh_input_ui(ui: &UiState) {
     let mode = get_input_type(ui);
-    let enable_pack_opts = if mode == InputType::Restore || ui.is_processing {
+    let busy = ui.is_processing.get();
+    let enable_pack_opts = if mode == InputType::Restore || busy {
         0
     } else {
         1
@@ -302,7 +315,7 @@ unsafe fn refresh_input_ui(ui: &UiState) {
             set_text(ui.h_btn_pack, "开始打包 (Pack)");
         }
         InputType::Folder => {
-            EnableWindow(ui.h_btn_browse, if ui.is_processing { 0 } else { 1 });
+            EnableWindow(ui.h_btn_browse, if busy { 0 } else { 1 });
             set_cue(
                 ui.h_edit_path,
                 "点击右侧“浏览”或直接拖放本地项目文件夹到此窗口...",
@@ -310,7 +323,7 @@ unsafe fn refresh_input_ui(ui: &UiState) {
             set_text(ui.h_btn_pack, "开始打包 (Pack)");
         }
         InputType::Zip => {
-            EnableWindow(ui.h_btn_browse, if ui.is_processing { 0 } else { 1 });
+            EnableWindow(ui.h_btn_browse, if busy { 0 } else { 1 });
             set_cue(
                 ui.h_edit_path,
                 "点击右侧“浏览”或直接拖放本地 .zip 压缩包到此窗口...",
@@ -318,7 +331,7 @@ unsafe fn refresh_input_ui(ui: &UiState) {
             set_text(ui.h_btn_pack, "开始打包 (Pack)");
         }
         InputType::Restore => {
-            EnableWindow(ui.h_btn_browse, if ui.is_processing { 0 } else { 1 });
+            EnableWindow(ui.h_btn_browse, if busy { 0 } else { 1 });
             set_cue(
                 ui.h_edit_path,
                 "选择或拖放本工具生成的代码说明文件 (.md / .xml / .txt) 还原为 ZIP...",
@@ -328,8 +341,8 @@ unsafe fn refresh_input_ui(ui: &UiState) {
     }
 }
 
-unsafe fn set_processing_state(ui: &mut UiState, processing: bool) {
-    ui.is_processing = processing;
+unsafe fn set_processing_state(ui: &UiState, processing: bool) {
+    ui.is_processing.set(processing);
     let en = if processing { 0 } else { 1 };
     EnableWindow(ui.h_radio_url, en);
     EnableWindow(ui.h_radio_dir, en);
@@ -415,7 +428,11 @@ fn build_default_filename(input_type: InputType, input: &str, format: OutputForm
     let raw_name = match input_type {
         InputType::Url => {
             let (base_url, _) = parse_git_url(input);
-            let last = base_url.trim_end_matches('/').rsplit('/').next().unwrap_or("codebase");
+            let last = base_url
+                .trim_end_matches('/')
+                .rsplit('/')
+                .next()
+                .unwrap_or("codebase");
             last.strip_suffix(".git").unwrap_or(last).to_string()
         }
         InputType::Folder => Path::new(input)
@@ -777,7 +794,7 @@ fn execute_pack(
             .map_err(|e| format!("遍历目录失败: {e}"))?;
         scan.candidates.sort_by(|a, b| a.0.cmp(&b.0));
 
-        // 流式写入临时正文文件，统计真实打包信息
+        // 流式写入临时正文文件，同时统计真实打包信息
         let body_file =
             File::create(&body_temp_path).map_err(|e| format!("创建临时缓存失败: {e}"))?;
         let mut body_writer = BufWriter::with_capacity(64 * 1024, body_file);
@@ -1333,7 +1350,7 @@ unsafe extern "system" fn wnd_proc(
 
             let hdc = GetDC(null_mut());
             let dpi = if !hdc.is_null() {
-                let d = GetDeviceCaps(hdc, LOGPIXELSX);
+                let d = GetDeviceCaps(hdc, LOGPIXELSX as i32);
                 ReleaseDC(null_mut(), hdc);
                 if d > 0 { d } else { 96 }
             } else {
@@ -1354,7 +1371,7 @@ unsafe extern "system" fn wnd_proc(
                 OUT_DEFAULT_PRECIS as _,
                 CLIP_DEFAULT_PRECIS as _,
                 CLEARTYPE_QUALITY as _,
-                (DEFAULT_PITCH | FF_DONTCARE) as _,
+                (DEFAULT_PITCH as u32 | FF_DONTCARE as u32) as _,
                 font_name.as_ptr(),
             );
             let font_title = CreateFontW(
@@ -1370,10 +1387,10 @@ unsafe extern "system" fn wnd_proc(
                 OUT_DEFAULT_PRECIS as _,
                 CLIP_DEFAULT_PRECIS as _,
                 CLEARTYPE_QUALITY as _,
-                (DEFAULT_PITCH | FF_DONTCARE) as _,
+                (DEFAULT_PITCH as u32 | FF_DONTCARE as u32) as _,
                 font_name.as_ptr(),
             );
-            let bg_brush = CreateSolidBrush(0x00F5F5F5);
+            let bg_brush = SHARED_BG.with(|b| b.get());
 
             let s = |v: i32| scale(v, dpi);
 
@@ -1409,7 +1426,7 @@ unsafe extern "system" fn wnd_proc(
             create_ctrl(
                 "BUTTON",
                 "模式与输入来源",
-                WS_CHILD | WS_VISIBLE | BS_GROUPBOX,
+                WS_CHILD | WS_VISIBLE | (BS_GROUPBOX as u32),
                 0,
                 s(18),
                 s(64),
@@ -1424,7 +1441,7 @@ unsafe extern "system" fn wnd_proc(
             let h_radio_url = create_ctrl(
                 "BUTTON",
                 "Git 链接",
-                WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_GROUP | BS_AUTORADIOBUTTON,
+                WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_GROUP | (BS_AUTORADIOBUTTON as u32),
                 0,
                 s(32),
                 s(85),
@@ -1438,7 +1455,7 @@ unsafe extern "system" fn wnd_proc(
             let h_radio_dir = create_ctrl(
                 "BUTTON",
                 "本地文件夹",
-                WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTORADIOBUTTON,
+                WS_CHILD | WS_VISIBLE | WS_TABSTOP | (BS_AUTORADIOBUTTON as u32),
                 0,
                 s(118),
                 s(85),
@@ -1452,7 +1469,7 @@ unsafe extern "system" fn wnd_proc(
             let h_radio_zip = create_ctrl(
                 "BUTTON",
                 "ZIP 压缩包",
-                WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTORADIOBUTTON,
+                WS_CHILD | WS_VISIBLE | WS_TABSTOP | (BS_AUTORADIOBUTTON as u32),
                 0,
                 s(222),
                 s(85),
@@ -1466,7 +1483,7 @@ unsafe extern "system" fn wnd_proc(
             let h_radio_restore = create_ctrl(
                 "BUTTON",
                 "文档还原 (转ZIP)",
-                WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTORADIOBUTTON,
+                WS_CHILD | WS_VISIBLE | WS_TABSTOP | (BS_AUTORADIOBUTTON as u32),
                 0,
                 s(328),
                 s(85),
@@ -1481,7 +1498,7 @@ unsafe extern "system" fn wnd_proc(
             let h_edit_path = create_ctrl(
                 "EDIT",
                 "",
-                WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_BORDER | ES_AUTOHSCROLL,
+                WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_BORDER | (ES_AUTOHSCROLL as u32),
                 WS_EX_CLIENTEDGE,
                 s(32),
                 s(114),
@@ -1495,7 +1512,7 @@ unsafe extern "system" fn wnd_proc(
             let h_btn_browse = create_ctrl(
                 "BUTTON",
                 "浏览...",
-                WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
+                WS_CHILD | WS_VISIBLE | WS_TABSTOP | (BS_PUSHBUTTON as u32),
                 0,
                 s(480),
                 s(113),
@@ -1510,7 +1527,7 @@ unsafe extern "system" fn wnd_proc(
             create_ctrl(
                 "BUTTON",
                 "输出格式",
-                WS_CHILD | WS_VISIBLE | WS_GROUP | BS_GROUPBOX,
+                WS_CHILD | WS_VISIBLE | WS_GROUP | (BS_GROUPBOX as u32),
                 0,
                 s(18),
                 s(164),
@@ -1525,7 +1542,7 @@ unsafe extern "system" fn wnd_proc(
             let h_radio_xml = create_ctrl(
                 "BUTTON",
                 "XML",
-                WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_GROUP | BS_AUTORADIOBUTTON,
+                WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_GROUP | (BS_AUTORADIOBUTTON as u32),
                 0,
                 s(32),
                 s(192),
@@ -1539,7 +1556,7 @@ unsafe extern "system" fn wnd_proc(
             let h_radio_md = create_ctrl(
                 "BUTTON",
                 "Markdown",
-                WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTORADIOBUTTON,
+                WS_CHILD | WS_VISIBLE | WS_TABSTOP | (BS_AUTORADIOBUTTON as u32),
                 0,
                 s(100),
                 s(192),
@@ -1553,7 +1570,7 @@ unsafe extern "system" fn wnd_proc(
             let h_radio_plain = create_ctrl(
                 "BUTTON",
                 "Plain",
-                WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTORADIOBUTTON,
+                WS_CHILD | WS_VISIBLE | WS_TABSTOP | (BS_AUTORADIOBUTTON as u32),
                 0,
                 s(198),
                 s(192),
@@ -1568,7 +1585,7 @@ unsafe extern "system" fn wnd_proc(
             create_ctrl(
                 "BUTTON",
                 "内容选项",
-                WS_CHILD | WS_VISIBLE | WS_GROUP | BS_GROUPBOX,
+                WS_CHILD | WS_VISIBLE | WS_GROUP | (BS_GROUPBOX as u32),
                 0,
                 s(286),
                 s(164),
@@ -1583,7 +1600,7 @@ unsafe extern "system" fn wnd_proc(
             let h_chk_summary = create_ctrl(
                 "BUTTON",
                 "包含统计摘要 (File Summary)",
-                WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_GROUP | BS_AUTOCHECKBOX,
+                WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_GROUP | (BS_AUTOCHECKBOX as u32),
                 0,
                 s(300),
                 s(185),
@@ -1597,7 +1614,7 @@ unsafe extern "system" fn wnd_proc(
             let h_chk_structure = create_ctrl(
                 "BUTTON",
                 "包含目录树 (Directory Structure)",
-                WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTOCHECKBOX,
+                WS_CHILD | WS_VISIBLE | WS_TABSTOP | (BS_AUTOCHECKBOX as u32),
                 0,
                 s(300),
                 s(207),
@@ -1612,7 +1629,7 @@ unsafe extern "system" fn wnd_proc(
             let h_chk_log = create_ctrl(
                 "BUTTON",
                 "启用运行日志 (默认关闭，勾选后写入同级目录)",
-                WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTOCHECKBOX,
+                WS_CHILD | WS_VISIBLE | WS_TABSTOP | (BS_AUTOCHECKBOX as u32),
                 0,
                 s(18),
                 s(249),
@@ -1627,7 +1644,7 @@ unsafe extern "system" fn wnd_proc(
             let h_btn_pack = create_ctrl(
                 "BUTTON",
                 "开始打包 (Pack)",
-                WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON,
+                WS_CHILD | WS_VISIBLE | WS_TABSTOP | (BS_DEFPUSHBUTTON as u32),
                 0,
                 s(368),
                 s(244),
@@ -1641,7 +1658,7 @@ unsafe extern "system" fn wnd_proc(
             let h_btn_reset = create_ctrl(
                 "BUTTON",
                 "重置",
-                WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
+                WS_CHILD | WS_VISIBLE | WS_TABSTOP | (BS_PUSHBUTTON as u32),
                 0,
                 s(500),
                 s(244),
@@ -1693,8 +1710,8 @@ unsafe extern "system" fn wnd_proc(
                 font_normal,
                 font_title,
                 bg_brush,
-                is_processing: false,
-                suppress_edit_change: false,
+                is_processing: Cell::new(false),
+                suppress_edit_change: Cell::new(false),
             };
             refresh_input_ui(&state);
 
@@ -1728,8 +1745,8 @@ unsafe extern "system" fn wnd_proc(
                 let path = String::from_utf16_lossy(&buf[..len as usize]);
 
                 UI.with(|cell| {
-                    if let Some(ui) = cell.borrow_mut().as_mut() {
-                        if ui.is_processing {
+                    if let Some(ui) = cell.borrow().as_ref() {
+                        if ui.is_processing.get() {
                             return;
                         }
                         let p = Path::new(&path);
@@ -1772,10 +1789,10 @@ unsafe extern "system" fn wnd_proc(
             let ctrl_id = (wparam & 0xFFFF) as i32;
             let notify = ((wparam >> 16) & 0xFFFF) as u32;
 
-            if ctrl_id == ID_EDIT_PATH && notify == EN_CHANGE {
+            if ctrl_id == ID_EDIT_PATH && notify == (EN_CHANGE as u32) {
                 UI.with(|cell| {
-                    if let Some(ui) = cell.borrow_mut().as_mut() {
-                        if ui.suppress_edit_change || ui.is_processing {
+                    if let Some(ui) = cell.borrow().as_ref() {
+                        if ui.suppress_edit_change.get() || ui.is_processing.get() {
                             return;
                         }
                         let text = get_text(ui.h_edit_path);
@@ -1789,7 +1806,7 @@ unsafe extern "system" fn wnd_proc(
                 return 0;
             }
 
-            if notify == BN_CLICKED {
+            if notify == (BN_CLICKED as u32) {
                 match ctrl_id {
                     ID_RADIO_URL | ID_RADIO_DIR | ID_RADIO_ZIP | ID_RADIO_RESTORE => {
                         UI.with(|cell| {
@@ -1834,7 +1851,7 @@ unsafe extern "system" fn wnd_proc(
                             };
                             if let Some(path) = picked {
                                 UI.with(|cell| {
-                                    if let Some(ui) = cell.borrow_mut().as_mut() {
+                                    if let Some(ui) = cell.borrow().as_ref() {
                                         let p_str = path.to_string_lossy().into_owned();
                                         set_edit_text_silently(ui, &p_str);
                                         write_log_line("INFO", &format!("浏览选择输入: {p_str}"));
@@ -1845,8 +1862,8 @@ unsafe extern "system" fn wnd_proc(
                     }
                     ID_BTN_RESET => {
                         UI.with(|cell| {
-                            if let Some(ui) = cell.borrow_mut().as_mut() {
-                                if !ui.is_processing {
+                            if let Some(ui) = cell.borrow().as_ref() {
+                                if !ui.is_processing.get() {
                                     set_edit_text_silently(ui, "");
                                     set_text(ui.h_lbl_status, "状态已重置。");
                                 }
@@ -1855,9 +1872,9 @@ unsafe extern "system" fn wnd_proc(
                     }
                     ID_BTN_PACK => {
                         let params = UI.with(|cell| {
-                            let mut guard = cell.borrow_mut();
-                            let ui = guard.as_mut()?;
-                            if ui.is_processing {
+                            let guard = cell.borrow();
+                            let ui = guard.as_ref()?;
+                            if ui.is_processing.get() {
                                 return None;
                             }
                             let input = get_text(ui.h_edit_path);
@@ -1909,7 +1926,7 @@ unsafe extern "system" fn wnd_proc(
                                 }
 
                                 UI.with(|cell| {
-                                    if let Some(ui) = cell.borrow_mut().as_mut() {
+                                    if let Some(ui) = cell.borrow().as_ref() {
                                         set_processing_state(ui, true);
                                         let status = if input_type == InputType::Restore {
                                             "正在解析说明文档并生成 ZIP，请稍候..."
@@ -1992,7 +2009,7 @@ unsafe extern "system" fn wnd_proc(
                 .unwrap_or((true, "处理完成。".to_string()));
 
             UI.with(|cell| {
-                if let Some(ui) = cell.borrow_mut().as_mut() {
+                if let Some(ui) = cell.borrow().as_ref() {
                     set_processing_state(ui, false);
                     if result.0 {
                         set_text(ui.h_lbl_status, &result.1);
@@ -2017,13 +2034,11 @@ unsafe extern "system" fn wnd_proc(
 
         WM_DESTROY => {
             write_log_line("INFO", "程序正常退出");
-            UI.with(|cell| {
-                if let Some(ui) = cell.borrow_mut().take() {
-                    DeleteObject(ui.font_normal);
-                    DeleteObject(ui.font_title);
-                    DeleteObject(ui.bg_brush);
-                }
-            });
+            let old = UI.with(|cell| cell.borrow_mut().take());
+            if let Some(ui) = old {
+                DeleteObject(ui.font_normal);
+                DeleteObject(ui.font_title);
+            }
             PostQuitMessage(0);
             0
         }
@@ -2038,13 +2053,7 @@ fn main() {
         set_log_enabled(true);
     }
 
-    std::panic::set_hook(Box::new(|info| {
-        let msg = format!("发生未捕获异常: {info}");
-        write_log_line("PANIC", &msg);
-        unsafe {
-            show_error_box(null_mut(), "程序异常", &msg);
-        }
-    }));
+    install_panic_hook();
 
     unsafe {
         enable_modern_ui_and_dpi();
@@ -2058,6 +2067,7 @@ fn main() {
         let h_inst = GetModuleHandleW(null_mut());
         let class_name = to_wide("RepomixPortableWin32");
         let bg = CreateSolidBrush(0x00F5F5F5);
+        SHARED_BG.with(|b| b.set(bg));
         let h_icon: HICON = LoadIconW(h_inst, 1usize as *const u16);
 
         let wc = WNDCLASSW {
@@ -2082,7 +2092,7 @@ fn main() {
 
         let hdc = GetDC(null_mut());
         let dpi = if !hdc.is_null() {
-            let d = GetDeviceCaps(hdc, LOGPIXELSX);
+            let d = GetDeviceCaps(hdc, LOGPIXELSX as i32);
             ReleaseDC(null_mut(), hdc);
             if d > 0 { d } else { 96 }
         } else {
