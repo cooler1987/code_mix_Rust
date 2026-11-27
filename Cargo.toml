@@ -1,7 +1,8 @@
 [package]
 name = "repomix-portable"
-version = "1.0.0"
+version = "1.1.0"
 edition = "2021"
+description = "Repomix Portable - Codebase Packer & Restore Tool"
 
 [[bin]]
 name = "repomix-portable"
@@ -20,10 +21,12 @@ features = [
     "Win32_System_LibraryLoader",
     "Win32_System_SystemInformation",
     "Win32_UI_Controls",
-    "Win32_UI_Input_KeyboardAndMouse",
     "Win32_UI_Shell",
     "Win32_UI_WindowsAndMessaging",
 ]
+
+[build-dependencies]
+winresource = "0.1"
 
 [profile.release]
 opt-level = "z"
